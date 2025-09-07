@@ -5,7 +5,12 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List
 
-import openai
+try:
+    import openai
+    from openai import OpenAI
+except Exception:
+    openai = None
+    OpenAI = None
 import google.generativeai as palm
 import google.api_core.exceptions as palm_exceptions
 
@@ -308,7 +313,10 @@ class ChatGPT(LargeLanguageModel):
 
     def __init__(self, model_name: str) -> None:
         self._model_name = model_name
-        openai.api_key = self.OPENAI_API_KEY
+        # Prefer new OpenAI client if available
+        self._client = OpenAI(api_key=self.OPENAI_API_KEY) if OpenAI is not None else None
+        if openai is not None:
+            openai.api_key = self.OPENAI_API_KEY
 
     def get_id(self) -> str:
         return f"chatgpt_{self._model_name}"
@@ -330,21 +338,36 @@ class ChatGPT(LargeLanguageModel):
         response = None
         for _ in range(6):
             try:
-                response = openai.ChatCompletion.create(
-                    model=self._model_name,
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=temperature,
-                    stop=stop_token,
-                    max_tokens=FLAGS.max_tokens,
-                    frequency_penalty=FLAGS.freq_penalty,
-                    n=num_completions)
+                if self._client is not None:
+                    chat = self._client.chat.completions.create(
+                        model=self._model_name,
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                        stop=[stop_token] if stop_token else None,
+                        max_tokens=FLAGS.max_tokens,
+                        n=num_completions,
+                        frequency_penalty=FLAGS.freq_penalty,
+                    )
+                    response = {"choices": [{"message": {"content": c.message.content}} for c in chat.choices]}
+                else:
+                    # Legacy path for openai<1.0
+                    response = openai.ChatCompletion.create(
+                        model=self._model_name,
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                        stop=stop_token,
+                        max_tokens=FLAGS.max_tokens,
+                        frequency_penalty=FLAGS.freq_penalty,
+                        n=num_completions)
                 # Successfully queried, so break.
                 break
-            except (openai.error.RateLimitError,
-                    openai.error.APIConnectionError, openai.error.APIError):
+            except Exception:
                 # Wait for 60 seconds if this limit is reached. Hopefully rare.
                 time.sleep(6)
 

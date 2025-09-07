@@ -1,0 +1,361 @@
+// ARC DSL grammar (enforces only functions defined in third_party/arc-dsl/dsl.py)
+
+start: expr
+
+?expr: tuple
+     | constant
+     | number
+     | variable
+     | hocall
+     | identity
+     | add
+     | subtract
+     | multiply
+     | divide
+     | invert
+     | even
+     | double
+     | halve
+     | flip
+     | equality
+     | contained
+     | combine
+     | intersection
+     | difference
+     | dedupe
+     | order
+     | repeat
+     | greater
+     | size
+     | merge
+     | maximum
+     | minimum
+     | valmax
+     | valmin
+     | argmax
+     | argmin
+     | mostcommon
+     | leastcommon
+     | initset
+     | both
+     | either
+     | increment
+     | decrement
+     | crement
+     | sign
+     | positive
+     | toivec
+     | tojvec
+     | sfilter
+     | mfilter
+     | extract
+     | totuple
+     | first
+     | last
+     | insert
+     | remove
+     | other
+     | interval
+     | astuple
+     | product
+     | pair
+     | branch
+     | compose
+     | chain
+     | matcher
+     | rbind
+     | lbind
+     | power
+     | fork
+     | apply
+     | rapply
+     | mapply
+     | papply
+     | mpapply
+     | prapply
+     | mostcolor
+     | leastcolor
+     | height
+     | width
+     | shape
+     | portrait
+     | colorcount
+     | colorfilter
+     | sizefilter
+     | asindices
+     | ofcolor
+     | ulcorner
+     | urcorner
+     | llcorner
+     | lrcorner
+     | crop
+     | toindices
+     | recolor
+     | shift
+     | normalize
+     | dneighbors
+     | ineighbors
+     | neighbors
+     | objects
+     | partition
+     | fgpartition
+     | uppermost
+     | lowermost
+     | leftmost
+     | rightmost
+     | square
+     | vline
+     | hline
+     | hmatching
+     | vmatching
+     | manhattan
+     | adjacent
+     | bordering
+     | centerofmass
+     | palette
+     | numcolors
+     | color
+     | toobject
+     | asobject
+     | rot90
+     | rot180
+     | rot270
+     | hmirror
+     | vmirror
+     | dmirror
+     | cmirror
+     | fill
+     | paint
+     | underfill
+     | underpaint
+     | hupscale
+     | vupscale
+     | upscale
+     | downscale
+     | hconcat
+     | vconcat
+     | subgrid
+     | hsplit
+     | vsplit
+     | cellwise
+     | replace
+     | switch
+     | center
+     | position
+     | index
+     | canvas
+     | corners
+     | connect
+     | cover
+     | trim
+     | move
+     | tophalf
+     | bottomhalf
+     | lefthalf
+     | righthalf
+     | vfrontier
+     | hfrontier
+     | backdrop
+     | delta
+     | gravitate
+     | inbox
+     | outbox
+     | box
+     | shoot
+     | occurrences
+     | frontiers
+     | compress
+     | hperiod
+     | vperiod
+
+// Tuple literal (2+ elements)
+tuple: "(" expr "," expr ("," expr)* ")"
+
+// Higher-order function calls (variable or parenthesized expr applied to args)
+paren_expr: "(" expr ")"
+callee: variable | paren_expr
+arglist: expr ("," expr)*
+hocall: callee "(" [arglist] ")"
+
+// Identifiers and literals
+variable: NAME
+number: SIGNED_NUMBER
+
+// Constants from constants.py
+constant: "T" | "F"
+        | "ZERO" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "EIGHT" | "NINE" | "TEN"
+        | "NEG_ONE" | "NEG_TWO"
+        | "DOWN" | "RIGHT" | "UP" | "LEFT"
+        | "ORIGIN" | "UNITY" | "NEG_UNITY" | "UP_RIGHT" | "DOWN_LEFT"
+        | "ZERO_BY_TWO" | "TWO_BY_ZERO" | "TWO_BY_TWO" | "THREE_BY_THREE"
+
+// Function calls (positional or exact keyword forms)
+identity: "identity(" expr ")" | "identity(" "x=" expr ")"
+add: "add(" expr "," expr ")" | "add(" "a=" expr "," "b=" expr ")"
+subtract: "subtract(" expr "," expr ")" | "subtract(" "a=" expr "," "b=" expr ")"
+multiply: "multiply(" expr "," expr ")" | "multiply(" "a=" expr "," "b=" expr ")"
+divide: "divide(" expr "," expr ")" | "divide(" "a=" expr "," "b=" expr ")"
+invert: "invert(" expr ")" | "invert(" "n=" expr ")"
+even: "even(" expr ")" | "even(" "n=" expr ")"
+double: "double(" expr ")" | "double(" "n=" expr ")"
+halve: "halve(" expr ")" | "halve(" "n=" expr ")"
+flip: "flip(" expr ")" | "flip(" "b=" expr ")"
+equality: "equality(" expr "," expr ")" | "equality(" "a=" expr "," "b=" expr ")"
+contained: "contained(" expr "," expr ")" | "contained(" "value=" expr "," "container=" expr ")"
+combine: "combine(" expr "," expr ")" | "combine(" "a=" expr "," "b=" expr ")"
+intersection: "intersection(" expr "," expr ")" | "intersection(" "a=" expr "," "b=" expr ")"
+difference: "difference(" expr "," expr ")" | "difference(" "a=" expr "," "b=" expr ")"
+dedupe: "dedupe(" expr ")" | "dedupe(" "tup=" expr ")"
+order: "order(" expr "," expr ")" | "order(" "container=" expr "," "compfunc=" expr ")"
+repeat: "repeat(" expr "," expr ")" | "repeat(" "item=" expr "," "num=" expr ")"
+greater: "greater(" expr "," expr ")" | "greater(" "a=" expr "," "b=" expr ")"
+size: "size(" expr ")" | "size(" "container=" expr ")"
+merge: "merge(" expr ")" | "merge(" "containers=" expr ")"
+maximum: "maximum(" expr ")" | "maximum(" "container=" expr ")"
+minimum: "minimum(" expr ")" | "minimum(" "container=" expr ")"
+valmax: "valmax(" expr "," expr ")" | "valmax(" "container=" expr "," "compfunc=" expr ")"
+valmin: "valmin(" expr "," expr ")" | "valmin(" "container=" expr "," "compfunc=" expr ")"
+argmax: "argmax(" expr "," expr ")" | "argmax(" "container=" expr "," "compfunc=" expr ")"
+argmin: "argmin(" expr "," expr ")" | "argmin(" "container=" expr "," "compfunc=" expr ")"
+mostcommon: "mostcommon(" expr ")" | "mostcommon(" "container=" expr ")"
+leastcommon: "leastcommon(" expr ")" | "leastcommon(" "container=" expr ")"
+initset: "initset(" expr ")" | "initset(" "value=" expr ")"
+both: "both(" expr "," expr ")" | "both(" "a=" expr "," "b=" expr ")"
+either: "either(" expr "," expr ")" | "either(" "a=" expr "," "b=" expr ")"
+increment: "increment(" expr ")" | "increment(" "x=" expr ")"
+decrement: "decrement(" expr ")" | "decrement(" "x=" expr ")"
+crement: "crement(" expr ")" | "crement(" "x=" expr ")"
+sign: "sign(" expr ")" | "sign(" "x=" expr ")"
+positive: "positive(" expr ")" | "positive(" "x=" expr ")"
+toivec: "toivec(" expr ")" | "toivec(" "i=" expr ")"
+tojvec: "tojvec(" expr ")" | "tojvec(" "j=" expr ")"
+sfilter: "sfilter(" expr "," expr ")" | "sfilter(" "container=" expr "," "condition=" expr ")"
+mfilter: "mfilter(" expr "," expr ")" | "mfilter(" "container=" expr "," "function=" expr ")"
+extract: "extract(" expr "," expr ")" | "extract(" "container=" expr "," "condition=" expr ")"
+totuple: "totuple(" expr ")" | "totuple(" "container=" expr ")"
+first: "first(" expr ")" | "first(" "container=" expr ")"
+last: "last(" expr ")" | "last(" "container=" expr ")"
+insert: "insert(" expr "," expr ")" | "insert(" "value=" expr "," "container=" expr ")"
+remove: "remove(" expr "," expr ")" | "remove(" "value=" expr "," "container=" expr ")"
+other: "other(" expr "," expr ")" | "other(" "container=" expr "," "value=" expr ")"
+interval: "interval(" expr "," expr "," expr ")" | "interval(" "start=" expr "," "stop=" expr "," "step=" expr ")"
+astuple: "astuple(" expr "," expr ")" | "astuple(" "a=" expr "," "b=" expr ")"
+product: "product(" expr "," expr ")" | "product(" "a=" expr "," "b=" expr ")"
+pair: "pair(" expr "," expr ")" | "pair(" "a=" expr "," "b=" expr ")"
+branch: "branch(" expr "," expr "," expr ")" | "branch(" "condition=" expr "," "a=" expr "," "b=" expr ")"
+compose: "compose(" expr "," expr ")" | "compose(" "outer=" expr "," "inner=" expr ")"
+chain: "chain(" expr "," expr "," expr ")" | "chain(" "h=" expr "," "g=" expr "," "f=" expr ")"
+matcher: "matcher(" expr "," expr ")" | "matcher(" "function=" expr "," "target=" expr ")"
+rbind: "rbind(" expr ")" | "rbind(" expr "," expr ")" | "rbind(" "function=" expr "," "fixed=" expr ")"
+lbind: "lbind(" expr ")" | "lbind(" expr "," expr ")" | "lbind(" "function=" expr "," "fixed=" expr ")"
+power: "power(" expr "," expr ")" | "power(" "function=" expr "," "n=" expr ")"
+fork: "fork(" expr "," expr "," expr ")" | "fork(" "outer=" expr "," "a=" expr "," "b=" expr ")"
+apply: "apply(" expr "," expr ")" | "apply(" "function=" expr "," "container=" expr ")"
+rapply: "rapply(" expr "," expr ")" | "rapply(" "functions=" expr "," "value=" expr ")"
+mapply: "mapply(" expr "," expr ")" | "mapply(" "function=" expr "," "container=" expr ")"
+papply: "papply(" expr "," expr "," expr ")" | "papply(" "function=" expr "," "a=" expr "," "b=" expr ")"
+mpapply: "mpapply(" expr "," expr "," expr ")" | "mpapply(" "function=" expr "," "a=" expr "," "b=" expr ")"
+prapply: "prapply(" expr "," expr "," expr ")" | "prapply(" "function=" expr "," "a=" expr "," "b=" expr ")"
+mostcolor: "mostcolor(" expr ")" | "mostcolor(" "element=" expr ")"
+leastcolor: "leastcolor(" expr ")" | "leastcolor(" "element=" expr ")"
+height: "height(" expr ")" | "height(" "piece=" expr ")"
+width: "width(" expr ")" | "width(" "piece=" expr ")"
+shape: "shape(" expr ")" | "shape(" "piece=" expr ")"
+portrait: "portrait(" expr ")" | "portrait(" "piece=" expr ")"
+colorcount: "colorcount(" expr "," expr ")" | "colorcount(" "element=" expr "," "value=" expr ")"
+colorfilter: "colorfilter(" expr "," expr ")" | "colorfilter(" "objs=" expr "," "value=" expr ")"
+sizefilter: "sizefilter(" expr ")" | "sizefilter(" expr "," expr ")" | "sizefilter(" "container=" expr "," "n=" expr ")"
+asindices: "asindices(" expr ")" | "asindices(" "grid=" expr ")"
+ofcolor: "ofcolor(" expr "," expr ")" | "ofcolor(" "grid=" expr "," "value=" expr ")"
+ulcorner: "ulcorner(" expr ")" | "ulcorner(" "patch=" expr ")"
+urcorner: "urcorner(" expr ")" | "urcorner(" "patch=" expr ")"
+llcorner: "llcorner(" expr ")" | "llcorner(" "patch=" expr ")"
+lrcorner: "lrcorner(" expr ")" | "lrcorner(" "patch=" expr ")"
+crop: "crop(" expr "," expr "," expr ")" | "crop(" "grid=" expr "," "start=" expr "," "dims=" expr ")"
+toindices: "toindices(" expr ")" | "toindices(" "patch=" expr ")"
+recolor: "recolor(" expr "," expr ")" | "recolor(" "value=" expr "," "patch=" expr ")"
+shift: "shift(" expr "," expr ")" | "shift(" "patch=" expr "," "directions=" expr ")"
+normalize: "normalize(" expr ")" | "normalize(" "patch=" expr ")"
+dneighbors: "dneighbors(" expr ")" | "dneighbors(" "loc=" expr ")"
+ineighbors: "ineighbors(" expr ")" | "ineighbors(" "loc=" expr ")"
+neighbors: "neighbors(" expr ")" | "neighbors(" "loc=" expr ")"
+objects: "objects(" expr "," expr "," expr "," expr ")"
+       | "objects(" "grid=" expr "," "univalued=" expr "," "diagonal=" expr "," "without_bg=" expr ")"
+partition: "partition(" expr ")" | "partition(" "grid=" expr ")"
+fgpartition: "fgpartition(" expr ")" | "fgpartition(" "grid=" expr ")"
+uppermost: "uppermost(" expr ")" | "uppermost(" "patch=" expr ")"
+lowermost: "lowermost(" expr ")" | "lowermost(" "patch=" expr ")"
+leftmost: "leftmost(" expr ")" | "leftmost(" "patch=" expr ")"
+rightmost: "rightmost(" expr ")" | "rightmost(" "patch=" expr ")"
+square: "square(" expr ")" | "square(" "piece=" expr ")"
+vline: "vline(" expr ")" | "vline(" "patch=" expr ")"
+hline: "hline(" expr ")" | "hline(" "patch=" expr ")"
+hmatching: "hmatching(" expr "," expr ")" | "hmatching(" "a=" expr "," "b=" expr ")"
+vmatching: "vmatching(" expr "," expr ")" | "vmatching(" "a=" expr "," "b=" expr ")"
+manhattan: "manhattan(" expr "," expr ")" | "manhattan(" "a=" expr "," "b=" expr ")"
+adjacent: "adjacent(" expr "," expr ")" | "adjacent(" "a=" expr "," "b=" expr ")"
+bordering: "bordering(" expr "," expr ")" | "bordering(" "patch=" expr "," "grid=" expr ")"
+centerofmass: "centerofmass(" expr ")" | "centerofmass(" "patch=" expr ")"
+palette: "palette(" expr ")" | "palette(" "element=" expr ")"
+numcolors: "numcolors(" expr ")" | "numcolors(" "element=" expr ")"
+color: "color(" expr ")" | "color(" "obj=" expr ")"
+toobject: "toobject(" expr "," expr ")" | "toobject(" "patch=" expr "," "grid=" expr ")"
+asobject: "asobject(" expr ")" | "asobject(" "grid=" expr ")"
+rot90: "rot90(" expr ")" | "rot90(" "grid=" expr ")"
+rot180: "rot180(" expr ")" | "rot180(" "grid=" expr ")"
+rot270: "rot270(" expr ")" | "rot270(" "grid=" expr ")"
+hmirror: "hmirror(" expr ")" | "hmirror(" "piece=" expr ")"
+vmirror: "vmirror(" expr ")" | "vmirror(" "piece=" expr ")"
+dmirror: "dmirror(" expr ")" | "dmirror(" "piece=" expr ")"
+cmirror: "cmirror(" expr ")" | "cmirror(" "piece=" expr ")"
+fill: "fill(" expr "," expr "," expr ")" | "fill(" "grid=" expr "," "value=" expr "," "patch=" expr ")"
+paint: "paint(" expr "," expr ")" | "paint(" "grid=" expr "," "obj=" expr ")"
+underfill: "underfill(" expr "," expr "," expr ")" | "underfill(" "grid=" expr "," "value=" expr "," "patch=" expr ")"
+underpaint: "underpaint(" expr "," expr ")" | "underpaint(" "grid=" expr "," "obj=" expr ")"
+hupscale: "hupscale(" expr ")" | "hupscale(" expr "," expr ")" | "hupscale(" "grid=" expr "," "factor=" expr ")"
+vupscale: "vupscale(" expr ")" | "vupscale(" expr "," expr ")" | "vupscale(" "grid=" expr "," "factor=" expr ")"
+upscale: "upscale(" expr "," expr ")" | "upscale(" "element=" expr "," "factor=" expr ")"
+downscale: "downscale(" expr "," expr ")" | "downscale(" "grid=" expr "," "factor=" expr ")"
+hconcat: "hconcat(" expr "," expr ")" | "hconcat(" "a=" expr "," "b=" expr ")"
+vconcat: "vconcat(" expr "," expr ")" | "vconcat(" "a=" expr "," "b=" expr ")"
+subgrid: "subgrid(" expr "," expr ")" | "subgrid(" "patch=" expr "," "grid=" expr ")"
+hsplit: "hsplit(" expr "," expr ")" | "hsplit(" "grid=" expr "," "n=" expr ")"
+vsplit: "vsplit(" expr "," expr ")" | "vsplit(" "grid=" expr "," "n=" expr ")"
+cellwise: "cellwise(" expr "," expr "," expr ")" | "cellwise(" "a=" expr "," "b=" expr "," "fallback=" expr ")"
+replace: "replace(" expr "," expr "," expr ")" | "replace(" "grid=" expr "," "replacee=" expr "," "replacer=" expr ")"
+switch: "switch(" expr "," expr "," expr ")" | "switch(" "grid=" expr "," "a=" expr "," "b=" expr ")"
+center: "center(" expr ")" | "center(" "patch=" expr ")"
+position: "position(" expr "," expr ")" | "position(" "a=" expr "," "b=" expr ")"
+index: "index(" expr "," expr ")" | "index(" "grid=" expr "," "loc=" expr ")"
+canvas: "canvas(" expr "," expr ")" | "canvas(" "value=" expr "," "dimensions=" expr ")"
+corners: "corners(" expr ")" | "corners(" "patch=" expr ")"
+connect: "connect(" expr "," expr ")" | "connect(" "a=" expr "," "b=" expr ")"
+cover: "cover(" expr "," expr ")" | "cover(" "grid=" expr "," "patch=" expr ")"
+trim: "trim(" expr ")" | "trim(" "grid=" expr ")"
+move: "move(" expr "," expr "," expr ")" | "move(" "grid=" expr "," "obj=" expr "," "offset=" expr ")"
+tophalf: "tophalf(" expr ")" | "tophalf(" "grid=" expr ")"
+bottomhalf: "bottomhalf(" expr ")" | "bottomhalf(" "grid=" expr ")"
+lefthalf: "lefthalf(" expr ")" | "lefthalf(" "grid=" expr ")"
+righthalf: "righthalf(" expr ")" | "righthalf(" "grid=" expr ")"
+vfrontier: "vfrontier(" expr ")" | "vfrontier(" "location=" expr ")"
+hfrontier: "hfrontier(" expr ")" | "hfrontier(" "location=" expr ")"
+backdrop: "backdrop(" expr ")" | "backdrop(" "patch=" expr ")"
+delta: "delta(" expr ")" | "delta(" "patch=" expr ")"
+gravitate: "gravitate(" expr "," expr ")" | "gravitate(" "source=" expr "," "destination=" expr ")"
+inbox: "inbox(" expr ")" | "inbox(" "patch=" expr ")"
+outbox: "outbox(" expr ")" | "outbox(" "patch=" expr ")"
+box: "box(" expr ")" | "box(" "patch=" expr ")"
+shoot: "shoot(" expr "," expr ")" | "shoot(" "start=" expr "," "direction=" expr ")"
+occurrences: "occurrences(" expr "," expr ")" | "occurrences(" "grid=" expr "," "obj=" expr ")"
+frontiers: "frontiers(" expr ")" | "frontiers(" "grid=" expr ")"
+compress: "compress(" expr ")" | "compress(" "grid=" expr ")"
+hperiod: "hperiod(" expr ")" | "hperiod(" "obj=" expr ")"
+vperiod: "vperiod(" expr ")" | "vperiod(" "obj=" expr ")"
+
+// Tokens
+%import common.CNAME -> NAME
+%import common.SIGNED_NUMBER
+%import common.WS
+%ignore WS
+
+

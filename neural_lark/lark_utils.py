@@ -392,13 +392,16 @@ def gen_min_lark(program, parser):
     Obtain the minimal grammar from a program
     """
     parse_trees = []
-    if "\n" in program:
-        program = program.split("\n")
-        for line in program:
-            parse_tree = parser.parse(line)
-            parse_trees.append(parse_tree)
+    # Support compact multi-statement programs joined by ' ## '
+    if ' ## ' in program:
+        stmts = [s for s in program.split(' ## ') if s.strip()]
+    elif "\n" in program:
+        stmts = [s for s in program.split("\n") if s.strip()]
     else:
-        parse_tree = parser.parse(program)
+        stmts = [program]
+
+    for stmt in stmts:
+        parse_tree = parser.parse(stmt)
         parse_trees.append(parse_tree)
     grammar = extract_min_grammar_from_trees(parse_trees)
     return grammar

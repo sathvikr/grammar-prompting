@@ -39,6 +39,12 @@ def setup_logger_file(logger, log_dir):
 
     logger.addHandler(fh)
     logger.addHandler(sh)  # log to console as well
+    # ensure immediate flush
+    for h in logger.handlers:
+        try:
+            h.flush()
+        except Exception:
+            pass
 
     logger.info("Logging to {}".format(logfile_path))
 

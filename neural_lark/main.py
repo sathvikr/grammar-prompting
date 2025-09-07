@@ -30,6 +30,9 @@ def construct_rule_instruction(rules, dataset):
     elif dataset == "folio":
         instruction = "First, you should write a BNF grammar that covers all the necessary predicates, constants and logical rules. Then, you should write first-order logic formulas that conform to your predicted rules. Note that constants should start with lowercase; predicates should start with uppercase.\n"
         add_rules_flag = True
+    elif dataset == "arc":
+        instruction = "First, you should write grammar rules by choosing from the following BNF rules. Then, you should write programs that conform to your predicted rules.\n"
+        add_rules_flag = True
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 

@@ -2,6 +2,7 @@ import os
 import json
 import random
 from dataclasses import dataclass
+import re
 
 from minEarley.parser import EarleyParser
 from neural_lark.flags import FLAGS
@@ -25,6 +26,123 @@ def load_examples(filename):
         for line1, line2 in zip(f1, f2):
             examples.append(Example(source=line1.strip(), target=line2.strip(),))
     return examples
+
+def _rewrite_var_calls_to_apply(expr: str) -> str:
+    """
+    Rewrite higher-order variable function calls like `x2(I)` into `apply(x2, I)`
+    so that they conform to the textual DSL grammar which lacks generic NAME(...)
+    call syntax for variables.
+    """
+    # Greedy-safe replacement using a small parser for balanced parentheses
+    def replace_match(m: re.Match) -> str:
+        var_name = m.group(1)
+        rest = m.group(2)
+        # rest starts with '(' and contains the full balanced arg list up to matching ')'
+        # We need to find the balanced parentheses span
+        depth = 0
+        args = []
+        start = 0
+        for i, ch in enumerate(rest):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    # include up to i (inclusive)
+                    args_str = rest[1:i]  # inside parentheses
+                    remainder = rest[i+1:]
+                    return f"apply({var_name}, {args_str}){remainder}"
+        # If unbalanced, return original
+        return f"{var_name}{rest}"
+
+    # Replace repeatedly until no change
+    pattern = re.compile(r"\b(x\d+)\s*(\(.*)\Z")
+    prev = None
+    cur = expr
+    # To avoid catastrophic behavior, limit iterations
+    for _ in range(10):
+        if prev == cur:
+            break
+        prev = cur
+        # Apply replacement only once per loop from leftmost occurrence
+        m = re.search(r"\b(x\d+)\s*(\(.*)", cur)
+        if not m:
+            break
+        prefix = cur[:m.start()]
+        replaced = replace_match(m)
+        cur = prefix + replaced
+    return cur
+
+def _extract_arc_examples_from_solvers(solvers_path: str):
+    """
+    Parse third_party/arc-dsl/solvers.py and convert each solver into an Example.
+    - source: a synthetic description containing the solver id
+    - target: a multi-line textual DSL program, one expression per line (RHS),
+              with higher-order variable calls rewritten to apply(var, arg)
+    """
+    with open(solvers_path, 'r') as f:
+        code = f.read()
+
+    # Find all solver functions
+    # Capture def solve_<id>(I): blocks
+    blocks = []
+    for m in re.finditer(r"^def\s+solve_([0-9a-f]+)\(I\):\n", code, flags=re.MULTILINE):
+        func_start = m.start()
+        func_id = m.group(1)
+        # Find next def or EOF
+        next_m = re.search(r"^def\s+solve_[0-9a-f]+\(I\):\n", code[m.end():], flags=re.MULTILINE)
+        if next_m:
+            block = code[m.end(): m.end() + next_m.start()]
+        else:
+            block = code[m.end():]
+        blocks.append((func_id, block))
+
+    examples = []
+    for func_id, block in blocks:
+        lines = []
+        for raw in block.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith('return '):
+                continue
+            # Keep only assignments of the form xN = <expr> or O = <expr>
+            if '=' in line:
+                lhs, rhs = line.split('=', 1)
+                lhs = lhs.strip()
+                rhs = rhs.strip()
+                # Remove trailing comments if any
+                if '#' in rhs:
+                    rhs = rhs.split('#', 1)[0].strip()
+                # Rewrite var function calls to apply(var, ...)
+                rhs_rewritten = _rewrite_var_calls_to_apply(rhs)
+                lines.append(rhs_rewritten)
+        if not lines:
+            continue
+        source = f"ARC task solve_{func_id}"
+        # Join statements into a single line, consistent with other datasets
+        target = " ## ".join(lines)
+        examples.append(Example(source=source, target=target))
+    return examples
+
+def _write_arc_splits(examples, out_dir: str, train_ratio=0.8, dev_ratio=0.1, seed=13):
+    os.makedirs(out_dir, exist_ok=True)
+    rng = random.Random(seed)
+    shuffled = examples[:]
+    rng.shuffle(shuffled)
+    n = len(shuffled)
+    n_train = int(n * train_ratio)
+    n_dev = int(n * dev_ratio)
+    train, dev, test = shuffled[:n_train], shuffled[n_train:n_train+n_dev], shuffled[n_train+n_dev:]
+    def write_split(name, split):
+        src_path = os.path.join(out_dir, f"{name}.src")
+        tgt_path = os.path.join(out_dir, f"{name}.tgt")
+        with open(src_path, 'w') as fs, open(tgt_path, 'w') as ft:
+            for ex in split:
+                fs.write(ex.source + "\n")
+                ft.write(ex.target + "\n")
+        return f"{src_path},{tgt_path}"
+    return write_split('train', train), write_split('dev', dev), write_split('test', test)
 
 def load_sempar_data(config):
     """
@@ -150,6 +268,17 @@ def load_sempar_data(config):
         test_examples = load_examples(test_filename)
 
         # normalize_program_for_all(train_examples + dev_examples + test_examples, parser)
+    elif config["dataset"] == "arc":
+        # Build ARC examples from solvers.py
+        solvers_path = "third_party/arc-dsl/solvers.py"
+        arc_examples = _extract_arc_examples_from_solvers(solvers_path)
+        out_dir = "data/arc/generated"
+        train_file, dev_file, test_file = _write_arc_splits(arc_examples, out_dir)
+        train_examples = load_examples(train_file)
+        dev_examples = load_examples(dev_file)
+        test_examples = load_examples(test_file)
+        if config["num_shot"] != -1:
+            train_examples = train_examples[:config["num_shot"]]
     elif config["dataset"] == "folio":
         def load_fol_examples(filename):
             examples = []
@@ -220,6 +349,9 @@ def load_sem_parser(config):
         global_parser = EarleyParser.open(grammar_file, start=start_symbol, keep_all_tokens=True)
     elif config["dataset"] == "folio":
         grammar_file, start_symbol = f"grammars/fol.lark", "formula"
+        global_parser = EarleyParser.open(grammar_file, start=start_symbol, keep_all_tokens=True)
+    elif config["dataset"] == "arc":
+        grammar_file, start_symbol = "grammars/arc_1.lark", "start"
         global_parser = EarleyParser.open(grammar_file, start=start_symbol, keep_all_tokens=True)
     else:
         raise ValueError(f"dataset {config['dataset']} not supported")

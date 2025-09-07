@@ -1,15 +1,29 @@
 import collections
 import numpy as np
 
-import torch
-from transformers import AutoTokenizer, AutoModel
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+except Exception:
+    torch = None
+    AutoTokenizer = None
+    AutoModel = None
 
 from neural_lark.train_utils import logger
 from neural_lark.lark_utils import *
 
-sb_tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/paraphrase-MiniLM-L6-v2')
-sb_model = AutoModel.from_pretrained('sentence-transformers/paraphrase-MiniLM-L6-v2')
-sb_model.eval()
+if AutoTokenizer is not None and AutoModel is not None:
+    try:
+        sb_tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/paraphrase-MiniLM-L6-v2')
+        sb_model = AutoModel.from_pretrained('sentence-transformers/paraphrase-MiniLM-L6-v2')
+        sb_model.eval()
+    except Exception:
+        # Fallback to no-SBERT mode if HF/Torch stack is unavailable
+        sb_tokenizer = None
+        sb_model = None
+else:
+    sb_tokenizer = None
+    sb_model = None
 
 def score_by_sentencebert(prediction, candidate):
     def mean_pooling(model_output, attention_mask):
@@ -17,21 +31,44 @@ def score_by_sentencebert(prediction, candidate):
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
         return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-    encoded_input = sb_tokenizer([prediction, candidate], padding=True, truncation=True, return_tensors='pt')
-    with torch.no_grad():
-        model_output = sb_model(**encoded_input)
-        sentence_embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
-        score = torch.cosine_similarity(sentence_embeddings[0], sentence_embeddings[1], dim=0)
-        return score.item()
+    if sb_tokenizer is None or sb_model is None or torch is None:
+        # Fallback: lexical overlap score
+        ps = set(prediction.split())
+        cs = set(candidate.split())
+        inter = len(ps & cs)
+        denom = (len(ps) + len(cs)) or 1
+        return inter / denom
+    else:
+        encoded_input = sb_tokenizer([prediction, candidate], padding=True, truncation=True, return_tensors='pt')
+        with torch.no_grad():
+            model_output = sb_model(**encoded_input)
+            sentence_embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+            score = torch.cosine_similarity(sentence_embeddings[0], sentence_embeddings[1], dim=0)
+            return score.item()
 
 
 def predict_program_with_earley_correction(llm, prompt, parser):
     MAX_NUM_CORRECTION = 6
     num_correction_left = MAX_NUM_CORRECTION
 
+    def _split_program_statements(text: str):
+        if ' ## ' in text:
+            return [s.strip() for s in text.split(' ## ') if s.strip()]
+        if "\n" in text:
+            return [s.strip() for s in text.split("\n") if s.strip()]
+        return [text.strip()] if text.strip() else []
+
+    def _all_statements_parse(text: str) -> bool:
+        stmts = _split_program_statements(text)
+        if not stmts:
+            return False
+        for stmt in stmts:
+            parser.parse(stmt)
+        return True
+
     def validate_program(prediction):
         try:
-            parser.parse(prediction)
+            _all_statements_parse(prediction)
             return True
         except Exception as runtime_e:
             logger.info(f"Error in prediction: {prediction}")
@@ -42,11 +79,28 @@ def predict_program_with_earley_correction(llm, prompt, parser):
         """
         Returns a list of candidates in the form of (prefix, suffix).
         """
-        try:
-            parser.parse(prediction)
+        # Parse statements sequentially; when one fails, propose corrections for that stmt
+        stmts = _split_program_statements(prediction)
+        if not stmts:
             return []
-        except Exception as runtime_e:
-            return parser.handle_error(runtime_e)
+        prefix_stmts = []
+        for idx, stmt in enumerate(stmts):
+            try:
+                parser.parse(stmt)
+                prefix_stmts.append(stmt)
+            except Exception as runtime_e:
+                # Get correction pairs for the failing statement
+                pairs = parser.handle_error(runtime_e)
+                # Lift pairs back to full-program prefix/suffix
+                joined_prefix = ' ## '.join(prefix_stmts)
+                if joined_prefix:
+                    joined_prefix += ' ## '
+                lifted = []
+                for pfx, sfx in pairs:
+                    lifted.append((joined_prefix + pfx, sfx))
+                return lifted
+        # All statements parsed; no correction needed
+        return []
 
     partial_program_prediction = ""
     ret_prediction, initial_prediction = None, None
