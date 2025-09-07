@@ -1,3 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local environment
+.env
+.env.*
+
+# Tooling & runs
+wandb/
+llm_cache/
+log/
+
+# Data outputs (keep raw datasets tracked if needed)
+data/**/generated/
 .DS_Store
 wandb/
 log/
