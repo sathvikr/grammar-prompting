@@ -77,8 +77,9 @@ def _extract_arc_examples_from_solvers(solvers_path: str):
     """
     Parse third_party/arc-dsl/solvers.py and convert each solver into an Example.
     - source: a synthetic description containing the solver id
-    - target: a multi-line textual DSL program, one expression per line (RHS),
-              with higher-order variable calls rewritten to apply(var, arg)
+    - target: an assignment-form program joined by ' ## ', e.g.,
+              'x1 = objects(I, T, F, T) ## x2 = merge(x1) ## ... ## O = subgrid(x2, I)'.
+              RHS calls are rewritten to apply(var, arg) for higher-order cases.
     """
     with open(solvers_path, 'r') as f:
         code = f.read()
@@ -116,7 +117,8 @@ def _extract_arc_examples_from_solvers(solvers_path: str):
                     rhs = rhs.split('#', 1)[0].strip()
                 # Rewrite var function calls to apply(var, ...)
                 rhs_rewritten = _rewrite_var_calls_to_apply(rhs)
-                lines.append(rhs_rewritten)
+                # Preserve full assignment
+                lines.append(f"{lhs} = {rhs_rewritten}")
         if not lines:
             continue
         source = f"ARC task solve_{func_id}"

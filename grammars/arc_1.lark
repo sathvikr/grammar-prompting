@@ -1,9 +1,21 @@
 // ARC DSL grammar (enforces only functions defined in third_party/arc-dsl/dsl.py)
 
-start: expr
+// A program is a single statement assigning an expression to a target
+// (Use multiple lines or '##' externally; the parser consumes one statement at a time)
+start: stmt
+
+// Statement must be an assignment to either O or an xN variable
+stmt: assignment
+assignment: target "=" expr
+target: "O" | XVAR
 
 ?expr: tuple
-     | constant
+     | bool
+     | digit
+     | neg_digit
+     | direction
+     | vector
+     | dims
      | number
      | variable
      | hocall
@@ -178,16 +190,16 @@ arglist: expr ("," expr)*
 hocall: callee "(" [arglist] ")"
 
 // Identifiers and literals
-variable: NAME
+variable: NAME | XVAR | "O"
 number: SIGNED_NUMBER
 
-// Constants from constants.py
-constant: "T" | "F"
-        | "ZERO" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "EIGHT" | "NINE" | "TEN"
-        | "NEG_ONE" | "NEG_TWO"
-        | "DOWN" | "RIGHT" | "UP" | "LEFT"
-        | "ORIGIN" | "UNITY" | "NEG_UNITY" | "UP_RIGHT" | "DOWN_LEFT"
-        | "ZERO_BY_TWO" | "TWO_BY_ZERO" | "TWO_BY_TWO" | "THREE_BY_THREE"
+// Constants from constants.py grouped by semantics
+bool: "T" | "F"
+digit: "ZERO" | "ONE" | "TWO" | "THREE" | "FOUR" | "FIVE" | "SIX" | "SEVEN" | "EIGHT" | "NINE" | "TEN"
+neg_digit: "NEG_ONE" | "NEG_TWO"
+direction: "DOWN" | "RIGHT" | "UP" | "LEFT"
+vector: "ORIGIN" | "UNITY" | "NEG_UNITY" | "UP_RIGHT" | "DOWN_LEFT"
+dims: "ZERO_BY_TWO" | "TWO_BY_ZERO" | "TWO_BY_TWO" | "THREE_BY_THREE"
 
 // Function calls (positional or exact keyword forms)
 identity: "identity(" expr ")" | "identity(" "x=" expr ")"
@@ -353,6 +365,7 @@ hperiod: "hperiod(" expr ")" | "hperiod(" "obj=" expr ")"
 vperiod: "vperiod(" expr ")" | "vperiod(" "obj=" expr ")"
 
 // Tokens
+XVAR: /x[0-9]+/
 %import common.CNAME -> NAME
 %import common.SIGNED_NUMBER
 %import common.WS

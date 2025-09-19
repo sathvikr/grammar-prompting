@@ -234,23 +234,34 @@ def _describe_value(value: Any) -> str:
 def interpret_program(program: str, input_grid: Any, project_root: Path, debug: bool = False) -> Tuple[Any, Dict[str, Any]]:
     """Interpret an ARC DSL program string against an input grid.
 
-    The program can be multi-statement separated by ' ## ' or newlines.
-    Assumes the k-th statement result is bound to x{k}.
-    Returns (last_result, env).
+    Accepts assignment-form statements: 'xN = expr' or 'O = expr'.
+    Multiple statements can be separated by ' ## ' or newlines.
+    Returns (last_assigned_value, env).
     """
     env = build_env(project_root)
     env["I"] = input_grid
     if debug:
         env["_trace"] = []
-    # Evaluate the program as-is; the runtime allows calling closures directly (e.g., x2(I))
     stmts = split_statements(program)
     last = None
     for idx, stmt in enumerate(stmts, start=1):
+        if not stmt:
+            continue
+        # Expect 'target = expr'
+        if '=' not in stmt:
+            # Back-compat: treat as expression assigned to x{idx}
+            target_name = f"x{idx}"
+            rhs = stmt
+        else:
+            lhs, rhs = stmt.split('=', 1)
+            target_name = lhs.strip()
+            rhs = rhs.strip()
         try:
-            last = eval_expression(stmt, env)
-            env[f"x{idx}"] = last
+            value = eval_expression(rhs, env)
+            env[target_name] = value
+            last = value
             if debug:
-                env["_trace"].append({"i": idx, "stmt": stmt, "type": _describe_value(last)})
+                env["_trace"].append({"i": idx, "stmt": stmt, "target": target_name, "type": _describe_value(value)})
         except Exception as e:
             if debug:
                 env.setdefault("_trace", []).append({"i": idx, "stmt": stmt, "error": f"{type(e).__name__}: {e}"})

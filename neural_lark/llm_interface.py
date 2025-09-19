@@ -81,15 +81,21 @@ class LargeLanguageModel(abc.ABC):
                                                    temperature,
                                                    stop_token, num_completions)
             # Cache the completions.
-            with open(cache_filepath, 'wb') as f:
-                pickle.dump(completions, f)
-            logger.debug(f"Saved LLM response to {cache_filepath}.")
-        
-        # Load the saved completion.
-        with open(cache_filepath, 'rb') as f:
-            completions = pickle.load(f)
-        logger.debug(f"Loaded LLM response from {cache_filepath}.")
-        return completions
+            if not disable_cache:
+                with open(cache_filepath, 'wb') as f:
+                    pickle.dump(completions, f)
+                logger.debug(f"Saved LLM response to {cache_filepath}.")
+            return completions
+
+        # Load the saved completion when cache is enabled and exists
+        if not disable_cache:
+            with open(cache_filepath, 'rb') as f:
+                completions = pickle.load(f)
+            logger.debug(f"Loaded LLM response from {cache_filepath}.")
+            return completions
+
+        # Should not reach here, but return empty list if no cache and caching disabled
+        return []
     
     def greedy_completion(self,
                           prompt: str,

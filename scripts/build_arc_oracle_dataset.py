@@ -72,7 +72,15 @@ def _extract_solver_programs(solvers_path: Path):
                 return var_map.get(name, name)
             rhs_renum = var_token.sub(repl, rhs)
             renumbered_exprs.append(rhs_renum)
-        program = ' ## '.join(renumbered_exprs)
+        # Convert into assignment form with sequential x1..xN and final O if detectable
+        stmts = []
+        for i, rhs in enumerate(renumbered_exprs, start=1):
+            stmts.append(f"x{i} = {rhs}")
+        # Heuristic: if there is any occurrence of 'return xK', attach final assignment to O
+        mret = re.search(r"return\s+(x\d+)", block)
+        if mret:
+            stmts.append(f"O = {mret.group(1)}")
+        program = ' ## '.join(stmts)
         mapping[func_id] = program
     return mapping
 
@@ -80,7 +88,34 @@ def _extract_solver_programs(solvers_path: Path):
 def _compute_oracle_bnf(program: str, proj_root: Path) -> str:
     from minEarley.parser import EarleyParser
     from neural_lark.lark_utils import gen_min_lark, lark2bnf
-    parser = EarleyParser.open(str(proj_root / 'grammars' / 'arc_1.lark'), start='start', keep_all_tokens=True)
+
+    # Load the canonical grammar as text so we can optionally remove 'hocall'
+    arc_lark_path = proj_root / 'grammars' / 'arc_1.lark'
+    with open(arc_lark_path, 'r') as f:
+        arc_lark_str = f.read()
+
+    # Heuristic: if the program does NOT appear to use higher-order calls
+    # (e.g., calling a variable like x1(...), or a parenthesized expression (...)(...)),
+    # then remove 'hocall' from the grammar for extraction so concrete function
+    # productions like 'objects(...)' are preferred and preserved in the minimal grammar.
+    uses_ho_var_call = re.search(r"\bx\d+\s*\(", program) is not None
+    uses_paren_callee = re.search(r"\)\s*\(", program) is not None
+
+    if not (uses_ho_var_call or uses_paren_callee):
+        # Remove ' | hocall' from expr alternatives (robust to spacing)
+        arc_lark_str = re.sub(r"(\n\s*\|\s*)hocall(\s*\n)", r"\2", arc_lark_str)
+        arc_lark_str = re.sub(r"(:\s*)([^\n]*?)\bhocall\b\s*\|\s*", r"\1\2", arc_lark_str)
+        arc_lark_str = re.sub(r"(\n[^\n]*?)\s*\|\s*hocall\s*$", r"\1", arc_lark_str, flags=re.MULTILINE)
+
+        # Remove the 'hocall:' production block entirely (single or multi-line)
+        arc_lark_str = re.sub(
+            r"\n\s*hocall\s*:\s*[^\n]*\n(?:\s*\|[^\n]*\n)*",
+            "\n",
+            arc_lark_str,
+        )
+
+    # Build parser from possibly-modified grammar string
+    parser = EarleyParser(arc_lark_str, start=['start'], keep_all_tokens=True)
     lark_str = gen_min_lark(program, parser)
     return lark2bnf(lark_str)
 

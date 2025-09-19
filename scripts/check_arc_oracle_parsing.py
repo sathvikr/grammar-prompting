@@ -42,13 +42,49 @@ def split_program(program: str) -> List[str]:
     else:
         parts = [program.strip()] if program.strip() else []
     return parts
+def _extract_name_tokens_from_bnf(bnf: str) -> set[str]:
+    tokens: set[str] = set()
+    if not bnf:
+        return tokens
+    for m in re.finditer(r"NAME\s*::=([^\n]+)", bnf):
+        seg = m.group(1)
+        tokens.update(re.findall(r'"([^"]+)"', seg))
+    return tokens
+
+
+def _augment_oracle_bnf_with_assignments(bnf: str) -> str:
+    """Wrap an oracle minimal BNF to require assignment statements.
+
+    Transforms the root 'start' into 'expr', and prepends:
+      start ::= stmt
+      stmt ::= assignment
+      assignment ::= target "=" expr
+      target ::= "O" | xvars_from_NAME
+    """
+    if not bnf or '::=' not in bnf:
+        return bnf
+    tokens = _extract_name_tokens_from_bnf(bnf)
+    xvars = sorted([t for t in tokens if re.fullmatch(r"x\d+", t)], key=lambda s: (len(s), s))
+    target_alts = ['"O"'] + [f'"{x}"' for x in xvars]
+    target_rule = "target ::= " + " | ".join(target_alts)
+    expr_bnf = re.sub(r"^start\s*::=", "expr ::=", bnf, count=1, flags=re.MULTILINE)
+    header = "\n".join([
+        "start ::= stmt",
+        "stmt ::= assignment",
+        "assignment ::= target \"=\" expr",
+        target_rule,
+    ])
+    return f"{header}\n{expr_bnf}"
+
 
 
 def build_parser_from_oracle_bnf(oracle_bnf: str) -> EarleyParser:
     """
     Convert oracle BNF to a Lark grammar, decorate it, and build an Earley parser.
     """
-    lark_str = bnf2lark(oracle_bnf)
+    # Ensure the oracle grammar accepts assignment-form programs
+    augmented = _augment_oracle_bnf_with_assignments(oracle_bnf)
+    lark_str = bnf2lark(augmented)
     lark_str = decorate_grammar(lark_str)
     parser = EarleyParser(lark_str, start=["start"], keep_all_tokens=True)
     return parser
@@ -67,6 +103,23 @@ def _eval_tree(node, env):
     t = node.data
     if t == 'start':
         return _eval_tree(node.children[0], env)
+    if t == 'stmt' or t == 'assignment':
+        # assignment: target '=' expr
+        # children: target, '=', expr
+        # Evaluate RHS and bind to target in env
+        # target is either 'O' or XVAR terminal under 'target'
+        # Evaluate RHS expression (child index 2)
+        value = _eval_tree(node.children[2], env)
+        # Extract target name
+        tgt_node = node.children[0]
+        # target -> ('O') or XVAR token
+        if hasattr(tgt_node, 'children') and tgt_node.children:
+            tok = tgt_node.children[0]
+            name = getattr(tok, 'value', str(tok))
+        else:
+            name = 'O'
+        env[name] = value
+        return value
     if t == 'hocall':
         # callee '(' arglist ')'
         func = _eval_tree(node.children[0], env)
@@ -82,13 +135,30 @@ def _eval_tree(node, env):
         tok = node.children[0]
         name = getattr(tok, 'value', str(tok))
         return env[name]
+    if t in ('bool', 'digit', 'neg_digit', 'direction', 'vector', 'dims'):
+        tok = node.children[0]
+        name = getattr(tok, 'value', str(tok))
+        return env[name]
     if t == 'arglist':
         args = []
         for ch in node.children:
             if hasattr(ch, 'data') and ch.data in ('variable', 'constant', 'hocall', 'callee'):
                 args.append(_eval_tree(ch, env))
         return args
-    # Fallback: evaluate first child
+    # Support concrete function rules (e.g., 'objects', 'fill', ...)
+    # If the node label matches a callable in env, treat children with data as argument expressions.
+    try:
+        fn = env.get(str(t))
+    except Exception:
+        fn = None
+    if callable(fn):
+        args = []
+        for ch in node.children:
+            if hasattr(ch, 'data'):
+                args.append(_eval_tree(ch, env))
+        return fn(*args)
+
+    # Fallback: evaluate first child with structure
     for ch in node.children:
         if hasattr(ch, 'data'):
             return _eval_tree(ch, env)

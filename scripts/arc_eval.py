@@ -6,12 +6,18 @@ import argparse
 from typing import Optional, List, Set, Tuple, Dict
 from pathlib import Path
 import re
+import numpy as np
+from datetime import datetime, timezone
 
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+# Default dump locations (single files)
+DEFAULT_PROGRAMS_DUMP = os.path.join(PROJECT_ROOT, "log", "oracle_programs.jsonl")
+DEFAULT_PROMPTS_DUMP = os.path.join(PROJECT_ROOT, "log", "oracle_prompts.jsonl")
 
 
 def require_arckit():
@@ -74,7 +80,23 @@ def build_oracle_parser_and_run(oracle_bnf: str, program: str, grid, project_roo
 
 def run_master(program: str, grid, project_root: Path):
     from neural_lark.arc_interpreter import interpret_program
-    return interpret_program(program, grid, project_root)[0]
+    last, _ = interpret_program(program, grid, project_root)
+    return _normalize_grid(last)
+
+def _normalize_grid(result):
+    """Convert predicted grid-like structures to tuple-of-tuples for stable equality.
+
+    Handles numpy arrays and list/tuple of lists/tuples.
+    """
+    try:
+        if hasattr(result, 'tolist'):
+            result = result.tolist()
+        if isinstance(result, (list, tuple)) and result and isinstance(result[0], (list, tuple, np.ndarray)):
+            # Convert inner to tuples as well
+            return tuple(tuple(r.tolist() if hasattr(r, 'tolist') else tuple(r) if isinstance(r, (list, tuple)) else r for r in row) for row in result) if False else tuple(tuple(c for c in row) for row in result)
+        return result
+    except Exception:
+        return result
 
 
 def _lark_to_bnf(grammar: str) -> str:
@@ -144,7 +166,56 @@ def sanitize_program_text(text: str, oracle_bnf: Optional[str], strip_fences: bo
 
         s = _QUOTE_TOKEN_RE.sub(_replace, s)
 
-    return s.strip()
+    s = s.strip()
+
+    # Fallback extraction if the model produced prose: try to pull assignment lines
+    if not s or ('=' not in s and ' ## ' not in s):
+        lines = [ln.strip() for ln in text.splitlines()]
+        assign_lines = [ln for ln in lines if '=' in ln and not ln.startswith('#')]
+        # Remove trailing punctuation and prose
+        cleaned = []
+        for ln in assign_lines:
+            # keep up to first inline comment
+            if '#' in ln:
+                ln = ln.split('#', 1)[0].strip()
+            # drop bullet markers
+            ln = ln.lstrip('-').strip()
+            # simple guard: looks like target = expr
+            if re.match(r"^(O|x\d+)\s*=\s*.+", ln):
+                cleaned.append(ln)
+        if cleaned:
+            s = ' ## '.join(cleaned)
+
+    return s
+def _augment_oracle_bnf_with_assignments(bnf: str) -> str:
+    """Wrap an oracle minimal BNF to require assignment statements.
+
+    Transforms the root 'start' into 'expr', and prepends:
+      start ::= stmt
+      stmt ::= assignment
+      assignment ::= target "=" expr
+      target ::= "O" | xvars_from_NAME
+
+    xN variables are derived from the NAME token list inside the oracle BNF.
+    """
+    if not bnf or '::=' not in bnf:
+        return bnf
+    # Extract tokens and identify x-variables present in this oracle
+    tokens = _extract_name_tokens_from_bnf(bnf)
+    xvars = sorted([t for t in tokens if re.fullmatch(r"x\d+", t)], key=lambda s: (len(s), s))
+    # Build target alternatives
+    target_alts = ['"O"'] + [f'"{x}"' for x in xvars]
+    target_rule = "target ::= " + " | ".join(target_alts)
+    # Rename start ::= ... to expr ::= ... (only first definition)
+    expr_bnf = re.sub(r"^start\s*::=", "expr ::=", bnf, count=1, flags=re.MULTILINE)
+    header = "\n".join([
+        "start ::= stmt",
+        "stmt ::= assignment",
+        "assignment ::= target \"=\" expr",
+        target_rule,
+    ])
+    return f"{header}\n{expr_bnf}"
+
 
 
 def build_prompt(rec, use_oracle: bool, master_lark_path: str, fewshot_text: Optional[str] = None, retrieval_text: Optional[str] = None) -> str:
@@ -161,12 +232,18 @@ def build_prompt(rec, use_oracle: bool, master_lark_path: str, fewshot_text: Opt
     if use_oracle:
         # Prefer explicit 'oracle' field; fall back to 'oracle_bnf'
         grammar = rec.get('oracle') or rec.get('oracle_bnf') or ""
-        bnf = grammar
+        # Enforce assignment-form programs in the prompt by wrapping the oracle minimal grammar
+        bnf = _augment_oracle_bnf_with_assignments(grammar)
     else:
         with open(master_lark_path, 'r') as f:
             lark_str = f.read()
         bnf = _lark_to_bnf(lark_str)
-    delimiter = "\n\nOutput the ARC program based on the BNF grammar rules:\n"
+    delimiter = (
+        "\n\nOutput the ARC program based on the BNF grammar rules:\n"
+        "Respond with only the program, no explanation, no blank lines, and no code fences.\n"
+        "If multiple statements, separate them with ' ## '.\n"
+        # "You must use ALL of the primitive functions present in this BNF at least once.\n"
+    )
     return f"{header}{fewshot_block}{retrieval_block}{bnf_header}{bnf}{delimiter}"
 
 
@@ -242,22 +319,56 @@ def prompt_program(rec, use_oracle: bool, engine: str, temperature: float, maste
             if not bnf_q:
                 raise ValueError('No oracle_bnf available for retrieval query')
             # Use the BNF string directly as the query document
-            retrieved, _ = bm25.retrieve_by_src(_norm_bnf(bnf_q), n=num_retrieved)
+            retrieved, _ = bm25.retrieve_by_src(_norm_bnf(bnf_q), n=num_retrieved + 2)
+            # Filter out the same task id if present; keep distinct 16 others
+            cur_id = str(rec.get('id', '')).lower()
+            filtered = []
+            seen = set()
+            for ex in retrieved:
+                rid_local = _rid_from_source(ex.source)
+                if not rid_local or rid_local == cur_id or rid_local in seen:
+                    continue
+                filtered.append(ex)
+                seen.add(rid_local)
+                if len(filtered) >= num_retrieved:
+                    break
             # If nothing retrieved, fallback to 16 random examples with known BNF
-            if not retrieved:
+            if not filtered:
                 import random as _random
                 fallback = _random.sample(examples_with_bnf, min(num_retrieved, len(examples_with_bnf)))
-                retrieved = fallback
+                filtered = fallback
             # Assemble lines for prompt
             lines = []
-            for ex in retrieved:
+            # Load tasks to render input/output grids for each retrieved task
+            try:
+                dataset = os.environ.get('ARC_DATASET_NAME', 'arcagi')
+                tasks_by_id_for_ret = load_tasks(dataset)
+            except Exception:
+                tasks_by_id_for_ret = {}
+
+            for ex in filtered:
                 rid = _rid_from_source(ex.source)
                 bnf_show = merged_oracle_map.get(rid, None)
                 program_text = ex.target
+                # Add input/output grids from arckit for this rid
+                io_block = ""
+                task_obj = tasks_by_id_for_ret.get(rid) if rid else None
+                if task_obj is not None:
+                    try:
+                        pair_lines = []
+                        for idx_io, (inp_io, out_io) in enumerate(list(task_obj.train)):
+                            ijson = inp_io.tolist() if hasattr(inp_io, 'tolist') else inp_io
+                            ojson = out_io.tolist() if hasattr(out_io, 'tolist') else out_io
+                            pair_lines.append(f"  Input:\n  {ijson}\n  Output:\n  {ojson}")
+                        if pair_lines:
+                            io_block = "\n" + "\n".join(pair_lines)
+                    except Exception:
+                        io_block = ""
+
                 if bnf_show:
-                    lines.append(f"- Task {rid}:\n  Oracle BNF:\n  {bnf_show}\n  Program:\n  {program_text}")
+                    lines.append(f"- Task {rid}:{io_block}\n  Oracle BNF:\n  {bnf_show}\n  Program:\n  {program_text}")
                 else:
-                    lines.append(f"- Task {rid}:\n  Program:\n  {program_text}")
+                    lines.append(f"- Task {rid}:{io_block}\n  Program:\n  {program_text}")
             retrieval_text = "\n".join(lines)
         else:
             retrieval_text = None
@@ -319,14 +430,36 @@ def eval_line(rec, tasks_by_id, mode_master: bool, mode_oracle: bool, project_ro
                 pred = run_master(program, grid, project_root)
                 if pred != expected:
                     master_ok = False
+                    # Visualize the first failure for this task
+                    try:
+                        import arckit.vis as vis
+                        print("[MASTER FAIL] Input:")
+                        vis.print_grid(np.array(grid))
+                        print("Expected:")
+                        vis.print_grid(np.array(expected))
+                        print("Predicted:")
+                        vis.print_grid(np.array(pred))
+                    except Exception:
+                        pass
             except Exception:
                 master_ok = False
 
         if mode_oracle and oracle_ok:
             try:
                 pred = build_oracle_parser_and_run(oracle_bnf, program, grid, str(project_root))
+                pred = _normalize_grid(pred)
                 if pred != expected:
                     oracle_ok = False
+                    try:
+                        import arckit.vis as vis
+                        print("[ORACLE FAIL] Input:")
+                        vis.print_grid(np.array(grid))
+                        print("Expected:")
+                        vis.print_grid(np.array(expected))
+                        print("Predicted:")
+                        vis.print_grid(np.array(pred))
+                    except Exception:
+                        pass
             except Exception:
                 oracle_ok = False
 
@@ -379,25 +512,25 @@ def main():
     parser.add_argument("--file", default="data/arc/oracle/arc_oracle.jsonl")
     parser.add_argument("--dataset", default="arcagi")
     parser.add_argument("--master", action="store_true", help="Evaluate with master interpreter")
-    parser.add_argument("--oracle", action="store_true", help="Evaluate with oracle_bnf interpreter")
-    parser.add_argument("--prompt", action="store_true", help="Generate programs via LLM prompt instead of using 'program' field")
+    parser.add_argument("--oracle", action="store_true", default=True, help="Evaluate with oracle_bnf interpreter (default)")
+    parser.add_argument("--prompt", action="store_true", default=True, help="Generate programs via LLM prompt instead of using 'program' field (default)")
     parser.add_argument("--engine", type=str, default="openai/gpt-4o-mini", help="LLM engine spec platform/model")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max_tokens", type=int, default=128)
     parser.add_argument("--freq_penalty", type=float, default=0.0)
     parser.add_argument("--llm_cache_dir", type=str, default="llm_cache")
-    parser.add_argument("--disable_cache", action="store_true", help="Force live LLM calls (no cache)")
-    parser.add_argument("--show_source", action="store_true", help="Show how the program was obtained (LLM/cache/fallback)")
+    parser.add_argument("--disable_cache", action="store_true", default=True, help="Force live LLM calls (no cache)")
+    parser.add_argument("--show_source", action="store_true", default=True, help="Show how the program was obtained (LLM/cache/fallback) (default)")
     parser.add_argument("--debug_prompt", action="store_true", help="Print prompt and any LLM exception when prompting fails")
-    parser.add_argument("--dump_programs", type=str, default=None, help="If set, dump generated programs to this JSONL path")
-    parser.add_argument("--dump_prompts", type=str, default=None, help="If set, dump the exact prompts used to this JSONL path")
     parser.add_argument("--constrain_parse", action="store_true", help="Retry prompting until the program parses under the oracle BNF")
     parser.add_argument("--max_retries", type=int, default=2, help="Max retries for constrained prompting")
     args = parser.parse_args()
 
-    if not (args.master or args.oracle):
-        print("Specify at least one of --master or --oracle")
-        sys.exit(1)
+    # Convenience: if no mode flags provided explicitly, defaults already set oracle=True
+    # Convenience: use /tmp/arc3.jsonl if present and user didn't override the default file
+    default_file = "data/arc/oracle/arc_oracle.jsonl"
+    if args.file == default_file and os.path.exists("/tmp/arc3.jsonl"):
+        args.file = "/tmp/arc3.jsonl"
 
     # Initialize LLM FLAGS for neural_lark.llm_interface
     try:
@@ -505,13 +638,14 @@ def main():
             augmented.append(new_rec)
         lines = augmented
 
-    # Optional: open dumper
+    # Always dump to default single files when prompting
     dumper = None
-    if args.prompt and args.dump_programs:
-        dumper = open(args.dump_programs, 'w')
     prompt_dumper = None
-    if args.prompt and args.dump_prompts:
-        prompt_dumper = open(args.dump_prompts, 'w')
+    if args.prompt:
+        os.makedirs(os.path.dirname(DEFAULT_PROGRAMS_DUMP), exist_ok=True)
+        os.makedirs(os.path.dirname(DEFAULT_PROMPTS_DUMP), exist_ok=True)
+        dumper = open(DEFAULT_PROGRAMS_DUMP, 'w')
+        prompt_dumper = open(DEFAULT_PROMPTS_DUMP, 'w')
 
     for idx, rec in enumerate(lines, 1):
         master_ok, oracle_ok, ex_id, _, _ = eval_line(rec, tasks_by_id, args.master, args.oracle, project_root)
@@ -529,19 +663,20 @@ def main():
             src_label = rec.get('_prog_source') or "FALLBACK"
         print(colorize(master_ok, oracle_ok, idx, total_lines, ex_id) + (f" src={src_label}" if src_label else ""), flush=True)
 
-        if dumper is not None and rec.get('_prog_source'):
+        if dumper is not None:
             obj = {
                 'id': rec.get('id'),
                 'program_generated': rec.get('program'),
                 'source': rec.get('_prog_source'),
                 'mode': 'oracle' if args.oracle else ('master' if args.master else 'unknown'),
+                'generated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             }
             import json as _json
             dumper.write(_json.dumps(obj) + "\n")
-        if prompt_dumper is not None and rec.get('_prompt_used'):
+        if prompt_dumper is not None:
             pobj = {
                 'id': rec.get('id'),
-                'prompt': rec.get('_prompt_used'),
+                'prompt': rec.get('_prompt_used') or '',
                 'mode': 'oracle' if args.oracle else ('master' if args.master else 'unknown'),
                 'engine': args.engine,
                 'temperature': args.temperature,

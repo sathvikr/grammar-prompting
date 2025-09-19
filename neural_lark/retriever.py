@@ -162,7 +162,8 @@ class BM25Retriever:
             return retrieved_examples
     
     def retrieve_by_src(self, src_str, n=5):
-        example = Example(idx=None, source=src_str, target="")
+        # Example dataclass expects (source, target)
+        example = Example(source=src_str, target="")
         return self.retrieve(example, n=n)
 
 def setup_bm25(train_examples):

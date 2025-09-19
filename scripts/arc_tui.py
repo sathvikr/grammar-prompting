@@ -4,7 +4,13 @@ import sys
 import json
 import argparse
 import curses
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:
+    ZoneInfo = None  # fallback handled below
 from typing import List, Dict, Optional
+import re
 from pathlib import Path
 
 
@@ -66,12 +72,60 @@ def load_prompt_dump(path: Optional[str]) -> Dict[str, Dict]:
                 mp[_id.lower()] = rec
     return mp
 
+def _load_oracle_map(jsonl_path: str) -> Dict[str, str]:
+    mp: Dict[str, str] = {}
+    try:
+        with open(jsonl_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                rid = str(obj.get('id', '')).lower()
+                bnf = obj.get('oracle') or obj.get('oracle_bnf')
+                if rid and bnf:
+                    mp[rid] = bnf
+    except Exception:
+        pass
+    return mp
+
+
+def _extract_solver_programs(solvers_path: str) -> Dict[str, str]:
+    code = open(solvers_path, 'r').read()
+    mapping: Dict[str, str] = {}
+    for m in re.finditer(r"^def\s+solve_([0-9a-f]+)\(I\):\n", code, flags=re.MULTILINE):
+        func_id = m.group(1)
+        start = m.end()
+        next_m = re.search(r"^def\s+solve_[0-9a-f]+\(I\):\n", code[start:], flags=re.MULTILINE)
+        block = code[start: start + next_m.start()] if next_m else code[start:]
+        stmts: List[str] = []
+        for raw in block.splitlines():
+            line = raw.strip()
+            if not line or line.startswith('return '):
+                continue
+            if '=' in line:
+                lhs, rhs = line.split('=', 1)
+                lhs = lhs.strip()
+                rhs = rhs.strip()
+                if '#' in rhs:
+                    rhs = rhs.split('#', 1)[0].strip()
+                stmts.append(f"{lhs} = {rhs}")
+        if stmts:
+            mapping[func_id] = " \n".join(stmts)
+    return mapping
+
+
 def build_prompt_for_record(rec: Dict, dataset: Optional[str]) -> str:
-    # Reuse arc_eval logic to build prompts deterministically and include few-shot examples
+    # Reuse arc_eval logic to build prompts deterministically and include few-shot and retrieval examples
     from scripts.arc_eval import build_prompt, load_tasks
+    from neural_lark.retriever import BM25Retriever
     master_lark_path = os.path.join(PROJECT_ROOT, "grammars", "arc_1.lark")
 
     fewshot_text = None
+    retrieval_text = None
     if dataset:
         try:
             import arckit  # noqa: F401
@@ -88,7 +142,88 @@ def build_prompt_for_record(rec: Dict, dataset: Optional[str]) -> str:
         except Exception:
             fewshot_text = None
 
-    return build_prompt(rec, use_oracle=True, master_lark_path=master_lark_path, fewshot_text=fewshot_text)
+    # Build retrieval block: 16 other tasks with oracle BNF and solver program, plus IO grids
+    try:
+        # Oracle BNFs: canonical file
+        merged_oracle_map: Dict[str, str] = {}
+        try:
+            canonical_jsonl = os.path.join(PROJECT_ROOT, 'data', 'arc', 'oracle', 'arc_oracle.jsonl')
+            merged_oracle_map.update(_load_oracle_map(canonical_jsonl))
+        except Exception:
+            pass
+
+        # Extract programs from solvers
+        solvers_path = os.path.join(PROJECT_ROOT, 'third_party', 'arc-dsl', 'solvers.py')
+        solver_prog_map = _extract_solver_programs(solvers_path)
+
+        # Build examples list with ids we have BNFs for
+        class _Ex:  # minimal container
+            def __init__(self, src: str, rid: str):
+                self.source = src
+                self.rid = rid
+
+        examples = []
+        for rid in solver_prog_map.keys():
+            if rid in merged_oracle_map:
+                examples.append(_Ex(f"solve_{rid}", rid))
+
+        def _ex2doc(ex_obj: _Ex) -> str:
+            bnf_local = merged_oracle_map.get(ex_obj.rid, '')
+            return re.sub(r"\s+", " ", bnf_local).strip()
+
+        if examples:
+            bm25 = BM25Retriever(examples, ex2doc=_ex2doc)
+            bnf_q = rec.get('oracle') or rec.get('oracle_bnf') or ''
+            if bnf_q:
+                retrieved, _ = bm25.retrieve_by_src(re.sub(r"\s+", " ", bnf_q).strip(), n=18)
+            else:
+                retrieved = examples[:18]
+            # Filter current id and dedupe to 16
+            cur_id = str(rec.get('id', '')).lower()
+            filtered: List[_Ex] = []
+            seen = set()
+            for ex in retrieved:
+                rid_local = ex.rid
+                if not rid_local or rid_local == cur_id or rid_local in seen:
+                    continue
+                filtered.append(ex)
+                seen.add(rid_local)
+                if len(filtered) >= 16:
+                    break
+
+            # Load tasks for IO grids display
+            try:
+                tasks_by_id_ret = load_tasks(dataset or 'arcagi')
+            except Exception:
+                tasks_by_id_ret = {}
+
+            lines_r = []
+            for ex in filtered:
+                rid_local = ex.rid
+                bnf_show = merged_oracle_map.get(rid_local)
+                prog_show = solver_prog_map.get(rid_local, '')
+                io_block = ""
+                task_obj = tasks_by_id_ret.get(rid_local)
+                if task_obj is not None:
+                    try:
+                        pair_lines = []
+                        for idx_io, (inp_io, out_io) in enumerate(list(task_obj.train)):
+                            ijson = inp_io.tolist() if hasattr(inp_io, 'tolist') else inp_io
+                            ojson = out_io.tolist() if hasattr(out_io, 'tolist') else out_io
+                            pair_lines.append(f"  Input:\n  {ijson}\n  Output:\n  {ojson}")
+                        if pair_lines:
+                            io_block = "\n" + "\n".join(pair_lines)
+                    except Exception:
+                        io_block = ""
+                if bnf_show:
+                    lines_r.append(f"- Task {rid_local}:{io_block}\n  Oracle BNF:\n  {bnf_show}\n  Program:\n  {prog_show}")
+                else:
+                    lines_r.append(f"- Task {rid_local}:{io_block}\n  Program:\n  {prog_show}")
+            retrieval_text = "\n".join(lines_r) if lines_r else None
+    except Exception:
+        retrieval_text = None
+
+    return build_prompt(rec, use_oracle=True, master_lark_path=master_lark_path, fewshot_text=fewshot_text, retrieval_text=retrieval_text)
 
 
 class ListView:
@@ -125,7 +260,31 @@ class ListView:
             if ex_id.lower() in self.programs_by_id:
                 src = self.programs_by_id[ex_id.lower()].get("source", "?")
                 extra = f"  [prog:{src}]"
-            line = f"[{j+1}/{len(self.items)}] {ex_id}{extra}"
+            # Lookup stored generation timestamp for this id (UTC ISOZ) and render as PST
+            ts_str = ""
+            prog_rec = self.programs_by_id.get(ex_id.lower())
+            if prog_rec:
+                iso = prog_rec.get('generated_at')
+                if iso:
+                    try:
+                        if iso.endswith('Z'):
+                            dt = datetime.fromisoformat(iso.replace('Z', '+00:00'))
+                        else:
+                            dt = datetime.fromisoformat(iso)
+                        if ZoneInfo is not None:
+                            dt_la = dt.astimezone(ZoneInfo("America/Los_Angeles"))
+                        else:
+                            dt_la = dt
+                        month_map = {1: "Jan.", 2: "Feb.", 3: "Mar.", 4: "Apr.", 5: "May", 6: "Jun.", 7: "Jul.", 8: "Aug.", 9: "Sept.", 10: "Oct.", 11: "Nov.", 12: "Dec."}
+                        mname = month_map.get(dt_la.month, dt_la.strftime('%b'))
+                        try:
+                            hm = dt_la.strftime('%-I:%M %p')
+                        except Exception:
+                            hm = dt_la.strftime('%I:%M %p').lstrip('0')
+                        ts_str = f"  {mname} {dt_la.day}, {hm} (PST)"
+                    except Exception:
+                        ts_str = ""
+            line = f"[{j+1}/{len(self.items)}] {ex_id}{extra}{ts_str}"
             attr = curses.A_REVERSE if j == self.idx else curses.A_NORMAL
             # color-code pass/fail if known
             rid = ex_id.lower()
@@ -214,6 +373,14 @@ def run_tui(stdscr, file: str, programs_path: Optional[str], dataset: Optional[s
     curses.init_pair(2, curses.COLOR_RED, -1)
 
     items = load_jsonl(file)
+    # Enforce single default dump paths used by arc_eval
+    from scripts.arc_eval import DEFAULT_PROGRAMS_DUMP, DEFAULT_PROMPTS_DUMP
+    programs_path = DEFAULT_PROGRAMS_DUMP
+    prompts_path = DEFAULT_PROMPTS_DUMP
+    if not os.path.exists(programs_path):
+        raise SystemExit(f"Programs dump not found: {programs_path}. Run arc_eval with --prompt to generate it.")
+    if not os.path.exists(prompts_path):
+        raise SystemExit(f"Prompts dump not found: {prompts_path}. Run arc_eval with --prompt to generate it.")
     programs_by_id = load_program_dump(programs_path)
     prompts_by_id = load_prompt_dump(prompts_path)
 
@@ -224,6 +391,16 @@ def run_tui(stdscr, file: str, programs_path: Optional[str], dataset: Optional[s
             from scripts.arc_eval import load_tasks, build_oracle_parser_and_run
             import arckit  # noqa: F401
             tasks_by_id = load_tasks(dataset)
+
+            def _normalize_grid(result):
+                try:
+                    if hasattr(result, 'tolist'):
+                        result = result.tolist()
+                    if isinstance(result, (list, tuple)) and result and isinstance(result[0], (list, tuple)):
+                        return tuple(tuple(c for c in row) for row in result)
+                    return result
+                except Exception:
+                    return result
             for rec in items:
                 rid = str(rec.get('id', '')).lower()
                 task = tasks_by_id.get(rid)
@@ -245,6 +422,7 @@ def run_tui(stdscr, file: str, programs_path: Optional[str], dataset: Optional[s
                     expected = tuple(tuple(r) for r in out.tolist()) if hasattr(out, 'tolist') else out
                     try:
                         pred = build_oracle_parser_and_run(rec.get('oracle_bnf', rec.get('oracle', '')), prog, grid, PROJECT_ROOT)
+                        pred = _normalize_grid(pred)
                         if pred != expected:
                             ok_all = False
                             break
@@ -279,20 +457,17 @@ def run_tui(stdscr, file: str, programs_path: Optional[str], dataset: Optional[s
         elif ch in (ord('p'), ord('P')):
             rec = list_view.current()
             rid = str(rec.get('id', '')).lower()
-            if rid in prompts_by_id:
-                prompt = prompts_by_id[rid].get('prompt', '')
-            else:
-                prompt = build_prompt_for_record(rec, dataset)
+            if rid not in prompts_by_id:
+                raise SystemExit(f"Missing prompt for {rid} in {prompts_path}")
+            prompt = prompts_by_id[rid].get('prompt', '')
             viewer = TextViewer(stdscr, prompt, f"Prompt: {rec.get('id')}")
             viewer.loop()
         elif ch in (ord('s'), ord('S')):
             rec = list_view.current()
             rid = str(rec.get('id', '')).lower()
-            prog = None
-            if rid in programs_by_id:
-                prog = programs_by_id[rid].get('program_generated')
-            if not prog:
-                prog = rec.get('program', '<no program available>')
+            if rid not in programs_by_id:
+                raise SystemExit(f"Missing program for {rid} in {programs_path}")
+            prog = programs_by_id[rid].get('program_generated', '')
             viewer = TextViewer(stdscr, str(prog), f"Program: {rec.get('id')}")
             viewer.loop()
 
@@ -300,12 +475,16 @@ def run_tui(stdscr, file: str, programs_path: Optional[str], dataset: Optional[s
 def main():
     ap = argparse.ArgumentParser(description="Terminal UI to browse ARC tasks, prompts, and solutions")
     ap.add_argument("--file", default="data/arc/oracle/arc_oracle.jsonl", help="Path to ARC JSONL input")
-    ap.add_argument("--programs", default=None, help="Path to JSONL dump of generated programs (from arc_eval --dump_programs)")
-    ap.add_argument("--dataset", default=None, help="arckit dataset name to color-code pass/fail (e.g., arcagi)")
-    ap.add_argument("--prompts", default=None, help="Path to JSONL dump of prompts (from arc_eval --dump_prompts)")
+    ap.add_argument("--dataset", default="arcagi", help="arckit dataset name to color-code pass/fail (default: arcagi)")
     args = ap.parse_args()
 
-    curses.wrapper(run_tui, args.file, args.programs, args.dataset, args.prompts)
+    # Convenience: auto-use /tmp/arc3.jsonl if present and user didn't override default file
+    default_file = "data/arc/oracle/arc_oracle.jsonl"
+    file_path = args.file
+    if file_path == default_file and os.path.exists("/tmp/arc3.jsonl"):
+        file_path = "/tmp/arc3.jsonl"
+
+    curses.wrapper(run_tui, file_path, None, args.dataset, None)
 
 
 if __name__ == "__main__":
